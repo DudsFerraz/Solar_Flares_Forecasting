@@ -1,0 +1,177 @@
+SeMiner: A Flexible Sequence Miner Method to Forecast Solar Time Series
+
+The forecasting methods follow the usual steps of a data
+mining process: acquisition and pre-processing of data, feature selection, classification, validation,
+and testing. They differ according to the solar parameters used, the preparation of both, training and
+testing datasets, and the adopted pre-processing and classification methods. They also differ on what
+is foreseen: one option is to forecast solar flares grouped under a set of categories, another produces a
+specific forecast for each class of solar flares.
+
+the vast majority of solar flare forecasting methods
+label a solar data tuple with the class “Positive”, if a solar flare occurs up to 24 h from the observed
+tuple, and “Negative”, if no solar flare occurs during the next 24 h. This labeling schema is too static
+because it does not consider the dynamics of solar data.
+
+In fact, the knowledge of a specialist (astrophysicist) is determinant to the success of a forecasting
+method based on data mining. In general, current forecasting systems do not allow the setup of
+specialized information from a specialist, such as: the most relevant solar features; the most relevant
+sub-series of solar data; the characteristics of the solar time series evolution that most significantly
+impact the forecasting results. Consequently, a pre-processing algorithm capable of including one’s
+specialist knowledge to set up input parameters may improve forecasting results.
+
+In summary, the main open issues in forecasting solar flares using data mining are:
+• Few works consider the historical evolution of solar time series;
+• Few works explicitly employs astrophysicists knowledge in the actual forecasting process;
+
+
+
+
+
+ The SeMiner method initially processes solar data time series into
+sequences, using the “SS” algorithm. Observed solar data sub-series are mapped according to
+events occurred after those observations. The specialist can adjust “SS” by setting up the forecasting
+horizon, the subseries size, and the time window used to analyze future events. In the second
+step, the processed sequences are submitted to a feature selection method that determines the most
+significant subseries that affect the forecasting results. Then, the produced data set is submitted to a data
+mining classifier, resulting in a learning model that predicts solar events in advance. Finally, in the third
+step, the testing time series window of solar data is submitted to the learning model, and its forecasting
+is obtained. In order to keep the entire forecasting process more efficient regarding performance,
+the “SS” algorithm was optimized using parallelization techniques for Graphics Processing Units
+(GPU), using a CUDA-NVIDIA framework.
+
+The most important difference between forecasting methods is the preprocessing method used to
+prepare raw data to be submitted to the classifier. In general, the forecasting methods enable classifiers
+to predict future events through the mapping of values of solar data observed in a particular instant
+of time with events occurred in a particular time window. This time window usually consists of the
+forecasting horizon. This approach does not consider the evolution of a time series in a particular
+period to perform the mapping. This is the reason why those methods do not consider the evolution
+of a solar data time series in the mapping, which causes the loss of valuable information for the
+forecasting process. Some forecasting methods set solar data observed in a specific instant of time to
+the class of a solar flare occurred after the observed data [7–9,18,19]. However, there are also works
+that map subseries of the solar data into events observed in the future, so that they adequately consider
+the historical evolution of solar data
+
+Current forecasting methods usually are not flexible enough to be set up with the specialist
+knowledge: their configuration is set up once, and no parameter can be modified afterward.
+Parameters that need specialist knowledge such as solar features, the size and period of both,
+training and testing data sets, the period that is considered to map values and future events, are all
+defined a single time, at the beginning of the process. Few methods allow the configuration of some of
+those parameters
+
+Finally, solar flare data has characteristics of Big Data due to its significant volume of data,
+the availability of several different data sources, and also because the data is produced at regular times.
+Thus, another related work worth mentioning compares four different optimization architectures in
+a Big Data domain [25]. One of the main conclusions of this work is that commodity servers can
+work efficiently with Big Data analytics, a scenario similar to the one employed by solar flare data
+processing. In the work presented in this paper, a commodity server is used to run the proposed
+forecasting method.
+
+
+
+
+
+Sequence Miner (SeMiner) Description
+
+SeMiner is a typical data mining classification system where the data preprocessing step allows
+the classification method to produce a forecasting model.
+The method designed aims to forecast solar events within a given time horizon or antecedence
+(e.g., two days).
+
+The input to the method is a time series of X-ray intensity emitted by the Sun, which can produce
+two possible forecasting results: “Yes” if a class C or higher solar event is predicted; and, “No” if it
+predicts events bellow class C.
+
+SEE FIGURE 1
+
+SeMiner performs forecasting by employing classification algorithms to predict labels of future
+tuples. However, traditional classification algorithms predict the label of a past tuple. Therefore, how is
+it possible to forecast future labels using traditional classifiers? SeMiner allows it by preprocessing the
+time series using the Series to Sequence (SS) algorithm described in the next section.
+A labeled training time series of X-ray intensity levels feeds the Series to Sequence (SS) algorithm,
+which transforms it in a set of sequences, called “Tuple Set” sequence, which links “observed” values
+of tuples to “future” solar events.
+The “Tuple Set” is submitted to a feature selection method which produces the final dataset that
+is employed as input for a classifier, generating a learning model which is employed to perform the
+forecasting using an unlabeled testing time series. Note that the “Feature Selection” box is set to
+“optional” in Figure 1. This is due to the possibility to perform the method either using the feature
+selection method, or not. In Section 4, some experiments are shown for both situations.
+
+
+
+
+
+The Series to Sequence (SS) Algorithm
+
+A window is a subset of a time series with a fixed size that begins in a specific instant of time.  SS analyses each time series window, splitting it into three parts called Current window, Jump and Future window, respectively.
+
+During its execution, the sliding window approach builds a set of windows of the same size,
+but each one beginning in an instant time-shifted from the previous window by a certain number of
+instances. This number is called Step.
+
+(Current window). The first n observations called Current Window... and Step is the movement
+that the sequences are shifted to build the next sequence
+
+(Jump) Note that the values within the Jump Window are the observations between the Current Window and the Future Window. Although these values are not taken into account by the algorithm that produces the final tuple, the number of observations within the Jump Window (the Jump Window size) is used to set the anticipation period of the forecasting process.
+
+(Future Window). The last f observations called Future Window...
+
+SS turns a time series window into a sequence, employing a sliding window approach as follows.
+SS scans the time series using a sliding window approach, producing consecutive sequences.
+The proposed method converts each sequence into a tuple. Here, we redefine tuple as a sequence
+attached to the highest event occurred in the Future window.
+
+(Tuple) An n-tuple is given by rt = (St, f wlabelt), where St is an n-sequence starting at timestamp t and
+fwlabelt is the most significant class defined found in f windowt, where f windowt is thefuture window of t.
+
+the tuple rt assigns a sequence to a label of a future event that occurs at timestamp t + n + s.
+The SS algorithm performs the first step of the SeMiner method, which is to process the time series into tuples using a sliding window approach. The produced tuples, instead of the original time series, are mined by the classifier algorithm.
+
+The main idea of the SS algorithm is to map the evolution of X-ray time series for each window to the maximum solar flare occurred after a specified period. The mapping is called “Solar Sequence”,and the dataset composed of all the Solar Sequences is named “Solar Sequence Dataset” (SSD). The period between the evolution time series and its solar flare class is called the forecasting horizon, and its size is given by “jump” (j) length. The data evolution time series, as well as the period in which the maximum solar flare will be obtained, has a defined size. This size is set with the length of the “current window” (c) and the “future window” (f), respectively. Thus, SS algorithm uses the X-ray values of “current window” and the maximum solar flare classification of the “future window” shown in Table 3. The resultant Solar Sequence Dataset (SSD) is shown in Table 4.
+
+In the sequential execution of SS, window-0 is fully built. Window-1 construction must wait for window-0 to be fully built. Similarly, windows 2 and 3 are generated waiting for their respective order in the sequential queue. This example is tiny, but for large datasets, this processing model is very time-consuming because, depending on the input dataset size, the algorithm may face data processing of a Gigabyte order.
+Therefore, it is imperative to optimize SS. For this purpose, it was developed a parallelized algorithm using GPU capabilities to optimize
+SS execution, making it more feasible to employ large datasets.
+
+
+
+
+
+
+Depending on the forecasting horizons range, three types of forecasting are possible: (1) short-term
+forecasting: embraces horizons of hours/days; (2) medium-term forecasting: includes horizons of
+months; (3) long-term forecasting: includes horizons of years. The method described in this paper is
+targeted to short-term forecasting. Therefore, further experiments should be performed to test medium
+and long-term forecasting.
+
+
+
+
+
+Conclusions
+
+In the first set of experiments, SeMiner was used to predict the background level of X-ray flux
+emitted by the Sun. The method was tested using different classification methods and data sizes.
+The best results obtained achieved an accuracy of 91.3%, True Positive Rate of 94.3% and True Negative
+Rate of 86.5% using IBK. These results firmly balance True Positive and True Negative rates, which is
+an essential issue because solar data is quite unbalanced.
+
+In the second set of experiments, the historical evolution of an X-ray time series was considered to
+produce the forecasting model. Furthermore, feature selection methods such as “Starminer” and “Relief
+Attribute Evaluation” were used to obtain an analysis of the most significant periods of time to be
+considered by the forecasting method. This approach resulted in high accuracy results, with balanced
+TP and TN rates. The strategy also resulted in some optimization in terms of execution speed, as the
+adoption of feature selection resulted in a performance speedup of 3.2. Those experiments reached an
+accuracy of 72.7%, with a TP rate of 70.9% and TN rate of 79.7%.
+
+Another contribution of this work was the analysis aiming to identify the most significant time
+intervals to consider the forecasting method. It was concluded that, in the scope of our experiments,
+the best time interval was within two days for “current window” and comprised both, the initial and
+end periods of the first day, and the last 16 h of the second day. This result corroborates the theory from
+domain specialists that the analysis of two days of data can determine possible future Solar Flares.
+
+Finally, the third set of experiments was concerned with further performance optimizations.
+The core module of SeMiner, the SS algorithm, was parallelized using CUDA, targeting parallel
+execution in GPUs. The strategy showed to be 4.36 times faster than its pure C sequential version.
+
+These results indicate that the SeMiner method is well-suited to predict X-ray background level
+and solar flare.

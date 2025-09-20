@@ -1,0 +1,32 @@
+ENHANCING SOLAR FLARE FORECASTING: A MULTI-CLASS AND MULTI-LABEL CLASSIFICATION APPROACH TO HANDLE IMBALANCED TIME SERIES
+
+
+
+
+
+solar flare forecasting has significant challenges:
+	(a) the sequence of data influences the phenomena and should be tracked;
+	(b) the features and intervals that cause and influence the phenomena are not defined;
+	(c) the forecasting should be performed in an affordable time;
+	(d) the data is highly imbalanced;
+	(e) adjacent classes are sometimes difficult to distinguish;
+	(f) the majority approaches perform binary forecasting (aggregating solar flare classes), instead of multi-class, as actually required.
+This work proposed a method that tackles these challenges simultaneously.
+
+First, we aimed to forecast the X-ray levels expected for the next few days. We proposed the SeMiner method... That allows to consider the sequence of instances in the mining process, handling challenge (a).
+
+feature selection is employed in order to determine which interval of data in the time series, most influences the forecasting process, handling challenge (b).
+
+Then, the processed sequences are submitted to a traditional classifier to generate a model that predicts future X-ray levels.
+
+Second, we parallelized SS to increase its performance, (by implementing it in CUDA platform) in order to tackle issue (c).
+
+Third, we improved SeMiner to tackle the remaining challenges by developing a new method called Ensemble of classifiers for imbalanced datasets (ECID). Which tackled issue (c).
+
+Using a modified bootstrap approach, an aggregation method combines the inducers results, enabling a multi-class and multi-label forecasting and thus, handling the issue of adjacent classes (e).
+
+
+
+
+
+ 
