@@ -3,7 +3,7 @@ import shutil
 import re
 from dotenv import load_dotenv
 
-def move_files(path_: str, begin_year_: int, end_year_: int):
+def move_files(path_: str, begin_year_: int, end_year_: int) -> None:
     files_in_dir = os.listdir(path_)
 
     for y in range(begin_year_, end_year_+1):
@@ -28,7 +28,7 @@ def move_files(path_: str, begin_year_: int, end_year_: int):
 
     return None
 
-def check_files(path_: str, begin_year_: int, end_year_: int):
+def check_files(path_: str, begin_year_: int, end_year_: int) -> None:
     for y in range(begin_year_, end_year_+1):
         year_dir = os.path.join(path_, str(y))
         files_in_dir = os.listdir(year_dir)
@@ -52,7 +52,7 @@ def check_files(path_: str, begin_year_: int, end_year_: int):
 
     return None
 
-def create_dirs(path_: str, begin_year_: int, end_year_: int):
+def create_dirs(path_: str, begin_year_: int, end_year_: int) -> None:
 
     for y in range(begin_year_,end_year_+1):
         year_dir = os.path.join(path_, str(y))
