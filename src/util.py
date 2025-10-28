@@ -33,8 +33,15 @@ def move_file(origin_dir: str, destiny_dir: str, file_name: str | re.Pattern[str
     return None
 
 
-def wait_download(file_path_, file_name_, timeout_seconds = 300) -> None:
-    part_file_path = file_path_ + '.part'
+def delete_file(dir_: str, file_name: str) -> None:
+    full_path = os.path.join(dir_, file_name)
+    os.remove(full_path)
+
+    return None
+
+
+def wait_download(file_path: str, file_name: str, timeout_seconds: int = 300) -> None:
+    part_file_path = file_path + '.part'
     start_time = time.time()
     download_finished = False
 
@@ -42,14 +49,18 @@ def wait_download(file_path_, file_name_, timeout_seconds = 300) -> None:
     while time.time() - start_time < timeout_seconds:
         if not os.path.exists(part_file_path):
             time.sleep(1)
-            if os.path.exists(file_path_):
-                print(f"        -> Download de '{file_name_}' concluído com sucesso!")
+            if os.path.exists(file_path):
+                print(f"        -> Download de '{file_name}' concluído com sucesso!")
                 download_finished = True
                 break
 
         time.sleep(1)
 
     if not download_finished:
-        print(f"        -> ERRO: Timeout! O download de '{file_name_}' demorou mais de {timeout_seconds}s.")
+        print(f"        -> ERRO: Timeout! O download de '{file_name}' demorou mais de {timeout_seconds}s.")
 
     return None
+
+
+flare_class_map = {'No Flare': 0, 'A': 1, 'B': 2, 'C': 3, 'M': 4, 'X': 5}
+reverse_flare_class_map = {v: k for k, v in flare_class_map.items()}
