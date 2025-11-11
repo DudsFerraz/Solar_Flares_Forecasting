@@ -1,0 +1,25 @@
+testar diferentes algoritmos em diferentes bases de dados?
+OU
+partir direto pra construção da nossa base de dados?
+
+
+
+
+
+aplicação de técnicas como "embedding" da série temporal ou criação de uma janela deslizante, que convertem efetivamente o problema de previsão num problema de regressão padrão.
+
+
+
+
+
+
+
+
+
+
+biblioteca pra converter nc
+
+colunas at = indice raio X a cada 12 minutos
+coluna classe = maxima explosao solar dia seguinte
+
+partir de uma classificacao binaria e ir evoluindo
