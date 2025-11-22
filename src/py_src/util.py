@@ -4,12 +4,31 @@ import re
 import time
 import pandas as pd
 import pyarrow.parquet as pq
+from sklearn.base import BaseEstimator, ClassifierMixin
 
 
 flare_class_map = {'No Flare': 0, 'A': 1, 'B': 2, 'C': 3, 'M': 4, 'X': 5}
 reverse_flare_class_map = {v: k for k, v in flare_class_map.items()}
 
 goes_magnitude_map = {'A': 1e-8, 'B': 1e-7, 'C': 1e-6, 'M': 1e-5, 'X': 1e-4}
+
+
+class ThresholdXGBClassifier(BaseEstimator, ClassifierMixin):
+    def __init__(self, model, threshold=0.5):
+        self.model = model
+        self.threshold = threshold
+
+    def fit(self, x, y):
+        self.model.fit(x, y)
+        return self
+
+    def predict(self, x):
+        probas = self.model.predict_proba(x)[:, 1]
+        return (probas >= self.threshold).astype(int)
+
+    def predict_proba(self, x):
+        return self.model.predict_proba(x)
+
 
 def create_dirs(path: str, range_:range) -> None:
     for i in range_:
@@ -89,7 +108,6 @@ def create_df_model_input_opt(slided_df_path, target_columns, wanted_cols_start_
         all_columns = parquet_schema.names
     except Exception as e:
         print(f"Erro ao ler o esquema do Parquet: {e}")
-        # Fallback: carregar tudo se a leitura do esquema falhar (menos eficiente)
         all_columns = pd.read_parquet(slided_df_path, columns=[]).columns
 
     wanted_cols = [c for c in all_columns if c.startswith(wanted_cols_start_with) or c in target_columns]
@@ -161,4 +179,3 @@ def parse_flare_class_expanded(class_expanded: str) -> float | None:
             return None
     except ValueError:
         return None
-
