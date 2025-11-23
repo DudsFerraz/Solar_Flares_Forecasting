@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, precision_recall_curve
+import inspect
 
 DataInput = Union[pd.DataFrame, np.ndarray]
 TargetInput = Union[pd.Series, np.ndarray]
@@ -64,6 +65,7 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
     def discover_top_features(self, x: DataInput, y: TargetInput,
                               cumulative_threshold: float = 0.95,
                               flux_values: pd.Series = None) -> List[str]:
+        import inspect
 
         print(f"--- Quick Scan (Discovery Mode) ---")
         fast_params = self.params.copy()
@@ -76,16 +78,20 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
             'features_to_keep': None
         }
 
-        if hasattr(self, 'buffer_limits'):
-            init_kwargs['buffer_limits'] = getattr(self, 'buffer_limits')
-            if hasattr(self, 'buffer_weight'):
-                init_kwargs['buffer_weight'] = getattr(self, 'buffer_weight')
+        sig = inspect.signature(self.__class__.__init__)
+        if 'buffer_limits' in sig.parameters:
+            init_kwargs['buffer_limits'] = getattr(self, 'buffer_limits', None)
+            if 'buffer_weight' in sig.parameters:
+                init_kwargs['buffer_weight'] = getattr(self, 'buffer_weight', 0.2)
 
         temp_model = self.__class__(**init_kwargs)
 
         fit_kwargs = {}
-        if flux_values is not None and hasattr(temp_model, 'buffer_limits') and temp_model.buffer_limits is not None:
+
+        if flux_values is not None and getattr(temp_model, 'buffer_limits', None) is not None:
             fit_kwargs['flux_values'] = flux_values
+
+        fit_kwargs['verbose'] = False
 
         temp_model.fit(x, y, **fit_kwargs)
 
@@ -114,9 +120,7 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         df['cumulative_importance'] = df['importance'].cumsum()
         return df
 
-
     def optimize_threshold(self, x: DataInput, y: TargetInput, target_recall: float = None) -> float:
-        """Encontra e aplica o melhor threshold."""
         x_filtered = self._filter_features(x)
         probas = self.model.predict_proba(x_filtered)[:, 1]
         precisions, recalls, thresholds = precision_recall_curve(y, probas)
@@ -127,7 +131,6 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
             best_thresh = thresholds[idx]
             print(f"Threshold ajustado para Recall ~{target_recall}: {best_thresh:.4f}")
         else:
-            # Interseção P=R
             idx = np.abs(precisions[:-1] - recalls[:-1]).argmin()
             best_thresh = thresholds[idx]
             print(f"Threshold de Equilíbrio (P=R): {best_thresh:.4f}")
@@ -142,13 +145,13 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
 
         df_thresholds = pd.DataFrame({
             'Threshold': thresholds,
-            'Precision (MX)': precisions[:-1],
-            'Recall (MX)': recalls[:-1]
+            'Precision (1)': precisions[:-1],
+            'Recall (1)': recalls[:-1]
         })
 
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(df_thresholds['Threshold'], df_thresholds['Recall (MX)'], label='Recall MX (Segurança)')
-        ax.plot(df_thresholds['Threshold'], df_thresholds['Precision (MX)'], label='Precision MX')
+        ax.plot(df_thresholds['Threshold'], df_thresholds['Recall (1)'], label='Recall 1 (Segurança)')
+        ax.plot(df_thresholds['Threshold'], df_thresholds['Precision (1)'], label='Precision 1')
         ax.set_xlabel('Limiar de Decisão (Threshold)')
         ax.set_ylabel('Score')
         ax.set_title('Trade-off: Escolhendo o Limiar Ideal')
@@ -170,20 +173,22 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
 
     def analyze_flux_errors(self, x: DataInput, y: TargetInput, flux_values: pd.Series,
                             buffer_limits: Tuple[float, float] = None) -> Tuple[plt.Figure, pd.DataFrame]:
+
         y_pred = self.predict(x)
 
         if buffer_limits is None:
-            buffer_limits = getattr(self, 'buffer_limits', (None, None))
-            if buffer_limits is None: buffer_limits = (None, None)
+            buffer_limits = getattr(self, 'buffer_limits', None)
 
-        lower, upper = buffer_limits
+        l_lim = buffer_limits[0] if buffer_limits else None
+        u_lim = buffer_limits[1] if buffer_limits else None
+
         df_res = pd.DataFrame({'Truth': y, 'Pred': y_pred, 'Flux': flux_values})
 
         conditions = [
-            (df_res['Truth'] == 1) & (df_res['Pred'] == 1),
-            (df_res['Truth'] == 0) & (df_res['Pred'] == 0),
-            (df_res['Truth'] == 0) & (df_res['Pred'] == 1),
-            (df_res['Truth'] == 1) & (df_res['Pred'] == 0)
+            (df_res['Truth'] == 1) & (df_res['Pred'] == 1),  #TP
+            (df_res['Truth'] == 0) & (df_res['Pred'] == 0),  #TN
+            (df_res['Truth'] == 0) & (df_res['Pred'] == 1),  #FP
+            (df_res['Truth'] == 1) & (df_res['Pred'] == 0)  #FN
         ]
         choices = ['TP (Hit)', 'TN (Correct Rejection)', 'FP (False Alarm)', 'FN (Miss)']
         df_res['Outcome'] = np.select(conditions, choices, default='Error')
@@ -195,28 +200,34 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
             sns.histplot(data=subset_c, x='Flux', hue='Outcome', multiple='stack',
                          palette={'TN (Correct Rejection)': 'lightgreen', 'FP (False Alarm)': 'red'},
                          log_scale=True, ax=axes[0], bins=50, edgecolor='black')
-        axes[0].set_title('Negative Class Analysis')
-        if lower: axes[0].axvline(lower, color='orange', ls='--', label=f'Lower ({lower:.1e})')
-        axes[0].legend()
+        axes[0].set_title('Negative Class Analysis (Should be 0)')
 
-        subset_mx = df_res[df_res['Truth'] == 1]
-        if not subset_mx.empty:
-            sns.histplot(data=subset_mx, x='Flux', hue='Outcome', multiple='stack',
+        if l_lim:
+            axes[0].axvline(l_lim, color='orange', ls='--', label=f'Buffer Lower ({l_lim:.1e})')
+            axes[0].legend()
+
+        subset_positive = df_res[df_res['Truth'] == 1]
+        if not subset_positive.empty:
+            sns.histplot(data=subset_positive, x='Flux', hue='Outcome', multiple='stack',
                          palette={'TP (Hit)': 'green', 'FN (Miss)': 'crimson'},
                          log_scale=True, ax=axes[1], bins=50, edgecolor='black')
-        axes[1].set_title('Positive Class Analysis')
-        if upper: axes[1].axvline(upper, color='orange', ls='--', label=f'Upper ({upper:.1e})')
-        axes[1].legend()
+        axes[1].set_title('Positive Class Analysis (Should be 1)')
 
+        if u_lim:
+            axes[1].axvline(u_lim, color='orange', ls='--', label=f'Buffer Upper ({u_lim:.1e})')
+            axes[1].legend()
+
+        plt.xlabel('Flux (W/m²) - Log Scale')
+        plt.tight_layout()
         plt.close(fig)
 
         def classify_zone(row):
             f = row['Flux']
-            l_lim = lower if lower is not None else -float('inf')
-            u_lim = upper if upper is not None else float('inf')
+            if l_lim is None or u_lim is None:
+                return '0. Global Range (No Buffer)'
+
             if f <= l_lim: return '1. Safe Zone (Low Flux)'
-            if l_lim < f < u_lim:
-                return '0. No Buffer' if (lower is None and upper is None) else '2. Buffer Zone'
+            if l_lim < f < u_lim: return '2. Buffer Zone'
             return '3. Safe Zone (High Flux)'
 
         df_res['Zone'] = df_res.apply(classify_zone, axis=1)
@@ -230,9 +241,53 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
             total_pos = summary['FN (Miss)'] + summary['TP (Hit)']
             summary['FN Rate (%)'] = (summary['FN (Miss)'] / total_pos * 100).round(1)
 
-        cols = ['TN (Correct Rejection)', 'FP (False Alarm)', 'FP Rate (%)', 'TP (Hit)', 'FN (Miss)', 'FN Rate (%)']
-        summary = summary.reindex(columns=[c for c in cols if c in summary.columns])
+        cols_order = ['TN (Correct Rejection)', 'FP (False Alarm)', 'FP Rate (%)', 'TP (Hit)', 'FN (Miss)',
+                      'FN Rate (%)']
+        summary = summary.reindex(columns=[c for c in cols_order if c in summary.columns])
+
         return fig, summary
+
+    def analyze_error_distribution(self, x: DataInput, y_true: TargetInput, flux_values: pd.Series) -> pd.DataFrame:
+        y_pred = self.predict(x)
+
+        df = pd.DataFrame({'Flux': flux_values, 'Truth': y_true, 'Pred': y_pred})
+
+        def get_solar_class(flux):
+            if flux < 1e-7: return 'A (< B1.0)'
+            if flux < 1e-6: return 'B (1.0 - 9.9)'
+            if flux < 1e-5: return 'C (1.0 - 9.9)'
+            if flux < 1e-4: return 'M (1.0 - 9.9)'
+            return 'X (> M10)'
+
+        df['SolarClass'] = df['Flux'].apply(get_solar_class)
+
+        conditions = [
+            (df['Truth'] == 1) & (df['Pred'] == 0),  #FN
+            (df['Truth'] == 0) & (df['Pred'] == 1)  #FP
+        ]
+        df['ErrorType'] = np.select(conditions, ['FN (Miss)', 'FP (False Alarm)'], default='Correct')
+
+        df_errors = df[df['ErrorType'] != 'Correct']
+
+        if df_errors.empty:
+            return pd.DataFrame(columns=['Mensagem'], data=['Nenhum erro encontrado!'])
+
+        report_count = df_errors.pivot_table(
+            index='SolarClass', columns='ErrorType', values='Flux', aggfunc='count', fill_value=0
+        )
+
+        report_mean = df_errors.pivot_table(
+            index='SolarClass', columns='ErrorType', values='Flux', aggfunc='mean'
+        )
+        report_mean = report_mean.map(lambda x: f"{x:.2e}" if x > 0 else "-")
+        report_mean.columns = [f"{c} Avg Flux" for c in report_mean.columns]
+
+        final = pd.concat([report_count, report_mean], axis=1)
+
+        order = ['A (< B1.0)', 'B (1.0 - 9.9)', 'C (1.0 - 9.9)', 'M (1.0 - 9.9)', 'X (> M10)']
+        final = final.reindex([o for o in order if o in final.index])
+
+        return final
 
     def save(self, filepath: str):
         joblib.dump(self, filepath)
@@ -292,17 +347,23 @@ class GatekeeperModel(StandardXGBModel):
         super().__init__(params, threshold, features_to_keep)
 
 
-class GreatFilterModel(StandardXGBModel):
-    def __init__(self, params: Dict[str, Any], threshold: float = 0.5, features_to_keep: List[str] = None):
-        super().__init__(params, threshold, features_to_keep)
+class GreatFilterModel(SoftBufferXGBModel):
+    def __init__(self, params: Dict[str, Any],
+                 buffer_limits: Tuple[float, float],
+                 buffer_weight: float = 0.2,
+                 threshold: float = 0.5,
+                 features_to_keep: List[str] = None):
+
+        super().__init__(params, threshold, buffer_limits, buffer_weight, features_to_keep)
 
 
 class Specialist910Model(SoftBufferXGBModel):
     def __init__(self, params: Dict[str, Any],
                  buffer_limits: Tuple[float, float],
-                 threshold: float = 0.5,
                  buffer_weight: float = 0.2,
+                 threshold: float = 0.5,
                  features_to_keep: List[str] = None):
+
         super().__init__(params, threshold, buffer_limits, buffer_weight, features_to_keep)
 
 
