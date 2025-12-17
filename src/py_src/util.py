@@ -4,8 +4,8 @@ import re
 import time
 import pandas as pd
 import pyarrow.parquet as pq
-from sklearn.base import BaseEstimator, ClassifierMixin
-
+from tqdm import tqdm
+import numpy as np
 
 flare_class_map = {'No Flare': 0, 'A': 1, 'B': 2, 'C': 3, 'M': 4, 'X': 5}
 reverse_flare_class_map = {v: k for k, v in flare_class_map.items()}
@@ -13,24 +13,7 @@ reverse_flare_class_map = {v: k for k, v in flare_class_map.items()}
 goes_magnitude_map = {'A': 1e-8, 'B': 1e-7, 'C': 1e-6, 'M': 1e-5, 'X': 1e-4}
 
 
-class ThresholdXGBClassifier(BaseEstimator, ClassifierMixin):
-    def __init__(self, model, threshold=0.5):
-        self.model = model
-        self.threshold = threshold
-
-    def fit(self, x, y):
-        self.model.fit(x, y)
-        return self
-
-    def predict(self, x):
-        probas = self.model.predict_proba(x)[:, 1]
-        return (probas >= self.threshold).astype(int)
-
-    def predict_proba(self, x):
-        return self.model.predict_proba(x)
-
-
-def create_dirs(path: str, range_:range) -> None:
+def create_dirs(path: str, range_: range) -> None:
     for i in range_:
         year_dir = os.path.join(path, str(i))
         os.makedirs(year_dir, exist_ok=True)
@@ -47,7 +30,7 @@ def move_file(origin_dir: str, destiny_dir: str, file_name: str | re.Pattern[str
                 found_file_name = file
                 break
         else:
-            if file==file_name:
+            if file == file_name:
                 found_file_name = file
                 break
     try:
@@ -91,7 +74,6 @@ def wait_download(file_path: str, file_name: str, timeout_seconds: int = 300) ->
 
 def create_df_model_input(slided_df_path: str, target_column: str, wanted_cols_start_with: str, resample_value: str,
                           resample_method: str) -> pd.DataFrame:
-
     slided_df = pd.read_parquet(slided_df_path)
 
     wanted_cols = [c for c in slided_df.columns if c.startswith(wanted_cols_start_with) or c == target_column]

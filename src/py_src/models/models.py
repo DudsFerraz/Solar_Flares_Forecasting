@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, precision_recall_curve
+import os
 import inspect
 
 DataInput = Union[pd.DataFrame, np.ndarray]
 TargetInput = Union[pd.Series, np.ndarray]
-
 
 class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
     def __init__(self, params: Dict[str, Any], threshold: float = 0.5,
@@ -74,11 +74,14 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
 
         init_kwargs = {
             'params': fast_params,
-            'threshold': 0.5,
             'features_to_keep': None
         }
 
         sig = inspect.signature(self.__class__.__init__)
+
+        if 'threshold' in sig.parameters:
+            init_kwargs['threshold'] = 0.5
+
         if 'buffer_limits' in sig.parameters:
             init_kwargs['buffer_limits'] = getattr(self, 'buffer_limits', None)
             if 'buffer_weight' in sig.parameters:
@@ -87,7 +90,6 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         temp_model = self.__class__(**init_kwargs)
 
         fit_kwargs = {}
-
         if flux_values is not None and getattr(temp_model, 'buffer_limits', None) is not None:
             fit_kwargs['flux_values'] = flux_values
 
@@ -297,10 +299,124 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
     def load(cls, filepath: str) -> 'SolarFlarePredictionModel':
         return joblib.load(filepath)
 
+    @staticmethod
+    def generate_features(xrays_to_slide: pd.DataFrame, cols: list[str] = None, metrics_windows: list[str] = None,
+                          deriv_windows: list[str] = None, resample_freq: str = '10min',
+                          resample_method: str = 'last') -> pd.DataFrame:
+
+        if cols is None:
+            cols = ['xl']
+        if metrics_windows is None:
+            metrics_windows = ['1h', '6h', '12h', '24h', '7D']
+        if deriv_windows is None:
+            deriv_windows = ['5min', '15min', '30min', '1h', '3h', '6h', '12h', '24h']
+
+
+        df_features = pd.DataFrame(index=xrays_to_slide.index)
+
+        for col in cols:
+            xrays_to_slide[f'{col}_log'] = np.log10(xrays_to_slide[col] + 1e-9)
+            for w in metrics_windows:
+                rolling_window = xrays_to_slide[col].rolling(window=w)
+                df_features[f'{col}_mean_{w}'] = rolling_window.mean()
+                df_features[f'{col}_std_{w}'] = rolling_window.std()
+                df_features[f'{col}_max_{w}'] = rolling_window.max()
+
+                df_features[f'{col}_log_mean_{w}'] = xrays_to_slide[f'{col}_log'].rolling(window=w).mean()
+                df_features[f'{col}_integ_{w}'] = rolling_window.sum()
+
+            col_diff = xrays_to_slide[col].diff()
+            for w in deriv_windows:
+                df_features[f'{col}_deriv_{w}'] = col_diff.rolling(w).mean()
+
+                diff_2 = col_diff.diff()
+                df_features[f'{col}_accel_{w}'] = diff_2.rolling(w).mean()
+
+            df_features[f'{col}_ratio_max1h_mean24h'] = df_features[f'{col}_max_1h'] / (
+                    df_features[f'{col}_mean_24h'] + 1e-9)
+            df_features[f'{col}_ratio_max6h_mean24h'] = df_features[f'{col}_max_6h'] / (
+                    df_features[f'{col}_mean_24h'] + 1e-9)
+            df_features[f'{col}_ratio_mean24h_mean7d'] = df_features[f'{col}_mean_24h'] / (
+                    df_features[f'{col}_mean_7D'] + 1e-9)
+
+            xrays_to_slide = xrays_to_slide.drop(columns=[f'{col}_log'])
+
+        flux_smoothed = xrays_to_slide['xl'].rolling(window='5min').mean()
+        conditions = [
+            (flux_smoothed >= 1e-4),  # X
+            (flux_smoothed >= 1e-5),  # M
+            (flux_smoothed >= 1e-6)  # C
+        ]
+        choices = [5, 4, 3]
+
+        class_numeric_series = pd.Series(
+            np.select(conditions, choices, default=0),
+            index=xrays_to_slide.index
+        )
+
+        prev_class = class_numeric_series.shift(1).fillna(0)
+
+        is_C_onset = ((class_numeric_series >= 3) & (prev_class < 3)).astype(int)
+        is_M_onset = ((class_numeric_series >= 4) & (prev_class < 4)).astype(int)
+        is_X_onset = ((class_numeric_series == 5) & (prev_class < 5)).astype(int)
+
+        history_windows = ['6h', '24h', '3D', '7D']
+
+        for w in history_windows:
+            df_features[f'count_C_{w}'] = is_C_onset.rolling(window=w).sum()
+            df_features[f'count_M_{w}'] = is_M_onset.rolling(window=w).sum()
+            df_features[f'count_X_{w}'] = is_X_onset.rolling(window=w).sum()
+
+            df_features[f'sum_class_score_{w}'] = class_numeric_series.rolling(window=w).sum()
+
+        return df_features.resample(resample_freq).agg(resample_method).ffill().dropna()
+
+    @staticmethod
+    def generate_target(xrays_to_slide: pd.DataFrame, events_to_slide: pd.DataFrame, target_windows: list[str] = None,
+                        resample_freq: str = '10min', resample_method: str = 'last'):
+
+        if target_windows is None:
+            target_windows = ['6h', '12h', '24h', '48h', '72h']
+
+        target_events_grouped = events_to_slide.set_index('begin')[['class_numeric', 'flux']]
+        target_events_grouped = target_events_grouped.groupby(level=0).max().reindex(xrays_to_slide.index).fillna(0)
+
+        ts_class = target_events_grouped['class_numeric']
+        ts_flux = target_events_grouped['flux']
+
+        df_target = pd.DataFrame(index=xrays_to_slide.index)
+        for w in target_windows:
+            window_timedelta = pd.to_timedelta(w)
+            window_size_int = int(window_timedelta.total_seconds() / (60 * 1))
+            indexer = pd.api.indexers.FixedForwardWindowIndexer(window_size=window_size_int)
+
+            future_class_numeric_max = ts_class.rolling(window=indexer, min_periods=1).max()
+            future_flux_max = ts_flux.rolling(window=indexer, min_periods=1).max()
+
+            df_target[f'target_class_in_{w}'] = (future_class_numeric_max.shift(-1).fillna(0)).astype(int)
+            df_target[f'target_flux_in_{w}'] = future_flux_max.shift(-1).fillna(0.0)
+
+        return df_target.resample(resample_freq).agg(resample_method).ffill().dropna()
 
 class XGBoostBaseAdapter(SolarFlarePredictionModel):
     def _build_model(self):
         self.model = xgb.XGBClassifier(**self.params)
+
+
+class XGBoostRegressorAdapter(SolarFlarePredictionModel):
+    def _build_model(self):
+        self.model = xgb.XGBRegressor(**self.params)
+
+    def predict(self, x: DataInput) -> np.ndarray:
+        x_filtered = self._filter_features(x)
+        return self.model.predict(x_filtered)
+
+    def predict_proba(self, x: DataInput) -> np.ndarray:
+        raise NotImplementedError("Modelos de regressão não possuem predict_proba. Use predict().")
+
+    def predict_class(self, x: DataInput, cutoff_value: float) -> np.ndarray:
+        y_pred_continuous = self.predict(x)
+        return (y_pred_continuous >= cutoff_value).astype(int)
 
 
 class StandardXGBModel(XGBoostBaseAdapter):
@@ -367,9 +483,138 @@ class Specialist910Model(SoftBufferXGBModel):
         super().__init__(params, threshold, buffer_limits, buffer_weight, features_to_keep)
 
 
-class SpecialistMXModel(SoftBufferXGBModel):
-    def __init__(self, params: Dict[str, Any], threshold: float = 0.5,
-                 buffer_limits: Optional[Tuple[float, float]] = None,
-                 buffer_weight: float = 0.2,
-                 features_to_keep: List[str] = None):
-        super().__init__(params, threshold, buffer_limits, buffer_weight, features_to_keep)
+class SpecialistMXModel(XGBoostRegressorAdapter):
+    def __init__(self, params: Dict[str, Any],
+                 features_to_keep: List[str] = None,):
+
+        super().__init__(params, threshold=0.0, features_to_keep=features_to_keep)
+
+
+class SolarFlarePredictor:
+    def __init__(self, windows: List[str]):
+        self.windows = windows
+
+        self.roles_env_map = {
+            'gatekeeper': 'GATEKEEPER',
+            'great_filter': 'GREAT_FILTER',
+            'specialist_910': 'SPECIALIST_910',
+            'specialist_mx': 'SPECIALIST_MX'
+        }
+
+        self.models = {role: {} for role in self.roles_env_map.keys()}
+
+        self._load_all_models()
+
+    def _load_all_models(self):
+        for role, env_prefix in self.roles_env_map.items():
+            base_path = os.getenv(f"{env_prefix}_MODELS_PATH")
+
+            if not base_path:
+                print(f"[ALERTA] Variável de ambiente {env_prefix}_MODELS_PATH não definida.")
+                continue
+
+            for w in self.windows:
+                filename = f"{role}_{w}_v1.joblib"
+                model_path = os.path.join(base_path, w, filename)
+
+                if os.path.exists(model_path):
+                    try:
+                        model_instance = joblib.load(model_path)
+                        self.models[role][w] = model_instance
+                    except Exception as e:
+                        print(f"[ERRO] Falha ao carregar {model_path}: {e}")
+                        self.models[role][w] = None
+                else:
+                    print(f"[AVISO] Modelo não encontrado: {model_path}")
+                    self.models[role][w] = None
+
+    def predict(self, feature_row: pd.Series) -> Dict[str, Any]:
+        x_input = feature_row.to_frame().T
+
+        results = {}
+        for w in self.windows:
+            results[w] = self._predict_cascade(w, x_input)
+
+        return results
+
+    def _predict_cascade(self, window: str, x_input: pd.DataFrame) -> Dict[str, Any]:
+        def get_prob(role_name):
+            model = self.models[role_name].get(window)
+            if model is None: return None
+
+            try:
+                return model.predict_proba(x_input)[:, 1][0]
+            except NotImplementedError:
+                return None
+
+        def get_pred(role_name):
+            model = self.models[role_name].get(window)
+            if model is None: return None
+            return model.predict(x_input)[0]
+
+        gk_pred = get_pred('gatekeeper')
+        gk_prob = get_prob('gatekeeper')
+        if gk_pred is None:
+            return {"status": "Error", "msg": "Missing Gatekeeper"}
+
+        if gk_pred == 0:
+            return {
+                "final_class": "No Flare",
+                "probability": 1 - gk_prob,
+                "risk_level": "None",
+                "path": "Gatekeeper"
+            }
+
+        gf_pred = get_pred('great_filter')
+        gf_prob = get_prob('great_filter')
+        if gf_pred is None:
+            return {"final_class": "Potential Flare", "msg": "Missing GreatFilter"}
+
+        if gf_pred == 0:
+            return {
+                "final_class": "Class A/B",
+                "probability": 1 - gf_prob,
+                "risk_level": "Low",
+                "path": "Gatekeeper -> GreatFilter"
+            }
+
+        s910_pred = get_pred('specialist_910')
+        s910_prob = get_prob('specialist_910')
+        if s910_pred is None:
+            return {"final_class": "Class C+", "msg": "Missing Specialist910"}
+
+        if s910_pred == 0:
+            return {
+                "final_class": "Class C",
+                "probability": 1 - s910_prob,
+                "risk_level": "Moderate",
+                "path": "Gatekeeper -> GreatFilter -> Spec910"
+            }
+
+        smx_model = self.models['specialist_mx'].get(window)
+        if smx_model is None:
+            return {"final_class": "Class M+", "msg": "Missing SpecialistMX"}
+
+        log_flux_pred = smx_model.predict(x_input)[0]
+
+        cutoff_x = -4.0
+
+        k = 10
+        pseudo_prob_x = 1 / (1 + np.exp(-k * (log_flux_pred - cutoff_x)))
+
+        if log_flux_pred < cutoff_x:
+            return {
+                "final_class": "Class M",
+                "probability": 1 - pseudo_prob_x,
+                "estimated_flux": 10 ** log_flux_pred,
+                "risk_level": "High",
+                "path": "Gatekeeper -> GreatFilter -> Spec910 -> SpecMX"
+            }
+        else:
+            return {
+                "final_class": "Class X",
+                "probability": pseudo_prob_x,
+                "estimated_flux": 10 ** log_flux_pred,
+                "risk_level": "Extreme",
+                "path": "Gatekeeper -> GreatFilter -> Spec910 -> SpecMX"
+            }
