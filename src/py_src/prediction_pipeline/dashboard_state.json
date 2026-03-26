@@ -1,0 +1,12 @@
+{
+    "last_update_utc": "2025-12-21T14:29:26.949634+00:00",
+    "data_latency_minutes": 3.448343066666667,
+    "predictions": {
+        "24h": {
+            "final_class": "Class C",
+            "probability": 0.6129538416862488,
+            "risk_level": "Moderate",
+            "path": "Gatekeeper -> GreatFilter -> Spec910"
+        }
+    }
+}

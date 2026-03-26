@@ -92,7 +92,8 @@ def create_df_model_input_opt(slided_df_path, target_columns, wanted_cols_start_
         print(f"Erro ao ler o esquema do Parquet: {e}")
         all_columns = pd.read_parquet(slided_df_path, columns=[]).columns
 
-    wanted_cols = [c for c in all_columns if c.startswith(wanted_cols_start_with) or c in target_columns]
+    # wanted_cols = [c for c in all_columns if c.startswith(wanted_cols_start_with) or c in target_columns]
+    wanted_cols = all_columns
 
     print(f"Carregando {len(wanted_cols)} colunas do arquivo Parquet...")
 

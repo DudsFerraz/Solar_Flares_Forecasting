@@ -6,9 +6,10 @@ import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, precision_recall_curve
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, precision_recall_curve, matthews_corrcoef, roc_auc_score, average_precision_score, f1_score
 import os
-import inspect
+pd.set_option('mode.copy_on_write', True)
+pd.set_option('future.no_silent_downcasting', True)
 
 DataInput = Union[pd.DataFrame, np.ndarray]
 TargetInput = Union[pd.Series, np.ndarray]
@@ -174,50 +175,65 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         return disp
 
     def analyze_flux_errors(self, x: DataInput, y: TargetInput, flux_values: pd.Series,
-                            buffer_limits: Tuple[float, float] = None) -> Tuple[plt.Figure, pd.DataFrame]:
+                            buffer_limits: Tuple[float, float] = None,
+                            cutoff: float = None) -> Tuple[plt.Figure, pd.DataFrame]:
 
-        y_pred = self.predict(x)
+        if cutoff is not None:
+            y_pred_raw = self.predict(x)
+            y_true_bin = (y >= cutoff).astype(int)
+            y_pred_bin = (y_pred_raw >= cutoff).astype(int)
+
+            label_neg = f'Classe < 10^{cutoff} (Negativos)'
+            label_pos = f'Classe >= 10^{cutoff} (Positivos)'
+            limit_ref = 10 ** cutoff
+        else:
+            y_pred_bin = self.predict(x)
+            y_true_bin = y
+            label_neg = 'Negative Class (0)'
+            label_pos = 'Positive Class (1)'
+            limit_ref = None
 
         if buffer_limits is None:
             buffer_limits = getattr(self, 'buffer_limits', None)
-
         l_lim = buffer_limits[0] if buffer_limits else None
         u_lim = buffer_limits[1] if buffer_limits else None
 
-        df_res = pd.DataFrame({'Truth': y, 'Pred': y_pred, 'Flux': flux_values})
+        df_res = pd.DataFrame({
+            'Flux': flux_values,
+            'Truth_Bin': y_true_bin,
+            'Pred_Bin': y_pred_bin
+        })
 
         conditions = [
-            (df_res['Truth'] == 1) & (df_res['Pred'] == 1),  #TP
-            (df_res['Truth'] == 0) & (df_res['Pred'] == 0),  #TN
-            (df_res['Truth'] == 0) & (df_res['Pred'] == 1),  #FP
-            (df_res['Truth'] == 1) & (df_res['Pred'] == 0)  #FN
+            (df_res['Truth_Bin'] == 1) & (df_res['Pred_Bin'] == 1),  # TP
+            (df_res['Truth_Bin'] == 0) & (df_res['Pred_Bin'] == 0),  # TN
+            (df_res['Truth_Bin'] == 0) & (df_res['Pred_Bin'] == 1),  # FP
+            (df_res['Truth_Bin'] == 1) & (df_res['Pred_Bin'] == 0)  # FN
         ]
         choices = ['TP (Hit)', 'TN (Correct Rejection)', 'FP (False Alarm)', 'FN (Miss)']
         df_res['Outcome'] = np.select(conditions, choices, default='Error')
 
         fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
-        subset_c = df_res[df_res['Truth'] == 0]
-        if not subset_c.empty:
-            sns.histplot(data=subset_c, x='Flux', hue='Outcome', multiple='stack',
+        subset_neg = df_res[df_res['Truth_Bin'] == 0]
+        if not subset_neg.empty:
+            sns.histplot(data=subset_neg, x='Flux', hue='Outcome', multiple='stack',
                          palette={'TN (Correct Rejection)': 'lightgreen', 'FP (False Alarm)': 'red'},
                          log_scale=True, ax=axes[0], bins=50, edgecolor='black')
-        axes[0].set_title('Negative Class Analysis (Should be 0)')
+        axes[0].set_title(label_neg)
+        if l_lim: axes[0].axvline(l_lim, color='orange', ls='--', label='Buffer Low')
+        if limit_ref: axes[0].axvline(limit_ref, color='black', ls=':', label='Cutoff Class')
+        axes[0].legend()
 
-        if l_lim:
-            axes[0].axvline(l_lim, color='orange', ls='--', label=f'Buffer Lower ({l_lim:.1e})')
-            axes[0].legend()
-
-        subset_positive = df_res[df_res['Truth'] == 1]
-        if not subset_positive.empty:
-            sns.histplot(data=subset_positive, x='Flux', hue='Outcome', multiple='stack',
+        subset_pos = df_res[df_res['Truth_Bin'] == 1]
+        if not subset_pos.empty:
+            sns.histplot(data=subset_pos, x='Flux', hue='Outcome', multiple='stack',
                          palette={'TP (Hit)': 'green', 'FN (Miss)': 'crimson'},
                          log_scale=True, ax=axes[1], bins=50, edgecolor='black')
-        axes[1].set_title('Positive Class Analysis (Should be 1)')
-
-        if u_lim:
-            axes[1].axvline(u_lim, color='orange', ls='--', label=f'Buffer Upper ({u_lim:.1e})')
-            axes[1].legend()
+        axes[1].set_title(label_pos)
+        if u_lim: axes[1].axvline(u_lim, color='orange', ls='--', label='Buffer High')
+        if limit_ref: axes[1].axvline(limit_ref, color='black', ls=':', label='Cutoff Class')
+        axes[1].legend()
 
         plt.xlabel('Flux (W/m²) - Log Scale')
         plt.tight_layout()
@@ -225,12 +241,12 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
 
         def classify_zone(row):
             f = row['Flux']
-            if l_lim is None or u_lim is None:
-                return '0. Global Range (No Buffer)'
+            ref_low = l_lim if l_lim else (limit_ref if limit_ref else 0)
+            ref_high = u_lim if u_lim else (limit_ref if limit_ref else float('inf'))
 
-            if f <= l_lim: return '1. Safe Zone (Low Flux)'
-            if l_lim < f < u_lim: return '2. Buffer Zone'
-            return '3. Safe Zone (High Flux)'
+            if f <= ref_low: return '1. Safe/Low Zone'
+            if ref_low < f < ref_high: return '2. Buffer/Transition Zone'
+            return '3. Danger/High Zone'
 
         df_res['Zone'] = df_res.apply(classify_zone, axis=1)
         summary = df_res.groupby(['Zone', 'Outcome']).size().unstack(fill_value=0)
@@ -249,10 +265,47 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
 
         return fig, summary
 
-    def analyze_error_distribution(self, x: DataInput, y_true: TargetInput, flux_values: pd.Series) -> pd.DataFrame:
-        y_pred = self.predict(x)
+    @staticmethod
+    def calculate_tss(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        if len(np.unique(y_true)) < 2 and len(np.unique(y_pred)) < 2:
+            return 0.0
 
-        df = pd.DataFrame({'Flux': flux_values, 'Truth': y_true, 'Pred': y_pred})
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+        tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+        return tpr - fpr
+
+    @staticmethod
+    def calculate_hss(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+        if len(np.unique(y_true)) < 2 and len(np.unique(y_pred)) < 2:
+            return 0.0
+
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+        total = len(y_true)
+        expected_correct = ((tp + fn) * (tp + fp) + (tn + fp) * (tn + fn)) / total
+
+        if total == expected_correct:
+            return 0.0
+
+        return (tp + tn - expected_correct) / (total - expected_correct)
+
+
+    def analyze_error_distribution(self, x: DataInput, y_true: TargetInput,
+                                   flux_values: pd.Series, cutoff: float = None) -> pd.DataFrame:
+
+        if cutoff is not None:
+            y_pred_raw = self.predict(x)
+            y_true_bin = (y_true >= cutoff).astype(int)
+            y_pred_bin = (y_pred_raw >= cutoff).astype(int)
+        else:
+            y_pred_bin = self.predict(x)
+            y_true_bin = y_true
+
+        df = pd.DataFrame({
+            'Flux': flux_values,
+            'Truth_Bin': y_true_bin,
+            'Pred_Bin': y_pred_bin
+        })
 
         def get_solar_class(flux):
             if flux < 1e-7: return 'A (< B1.0)'
@@ -264,8 +317,8 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         df['SolarClass'] = df['Flux'].apply(get_solar_class)
 
         conditions = [
-            (df['Truth'] == 1) & (df['Pred'] == 0),  #FN
-            (df['Truth'] == 0) & (df['Pred'] == 1)  #FP
+            (df['Truth_Bin'] == 1) & (df['Pred_Bin'] == 0),  # FN
+            (df['Truth_Bin'] == 0) & (df['Pred_Bin'] == 1)  # FP
         ]
         df['ErrorType'] = np.select(conditions, ['FN (Miss)', 'FP (False Alarm)'], default='Correct')
 
@@ -277,7 +330,6 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         report_count = df_errors.pivot_table(
             index='SolarClass', columns='ErrorType', values='Flux', aggfunc='count', fill_value=0
         )
-
         report_mean = df_errors.pivot_table(
             index='SolarClass', columns='ErrorType', values='Flux', aggfunc='mean'
         )
@@ -291,6 +343,82 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
 
         return final
 
+    def get_comprehensive_metrics(self, x: DataInput, y: TargetInput) -> pd.DataFrame:
+        # Conversão explícita para resolver o aviso do linter no f1_score
+        y_pred = self.predict(x).astype(int)
+        y_true = np.array(y).astype(int)
+        y_prob = self.predict_proba(x)[:, 1]
+
+        tss = self.calculate_tss(y_true, y_pred)
+        hss = self.calculate_hss(y_true, y_pred)
+        mcc = matthews_corrcoef(y_true, y_pred)
+        roc_auc = roc_auc_score(y_true, y_prob)
+        pr_auc = average_precision_score(y_true, y_prob)
+        f1 = f1_score(y_true, y_pred) #type: ignore
+
+        metrics = {
+            "TSS": [tss],
+            "HSS": [hss],
+            "MCC": [mcc],
+            "ROC AUC": [roc_auc],
+            "PR AUC": [pr_auc],
+            "F1 Score": [f1]
+        }
+
+        return pd.DataFrame(metrics).round(4)
+
+    @staticmethod
+    def calculate_prss(y_true: TargetInput, y_pred_model: TargetInput, y_pred_persistence: TargetInput) -> float:
+        """
+        Calcula o Persistence Relative Skill Score (PR-F1)
+        y_pred_persistence: O label da janela temporal imediatamente anterior.
+        """
+        y_t = np.array(y_true).astype(int)
+        y_p_model = np.array(y_pred_model).astype(int)
+        y_p_pers = np.array(y_pred_persistence).astype(int)
+
+        f1_model = f1_score(y_t, y_p_model) #type:ignore
+        f1_persistence = f1_score(y_t, y_p_pers) #type:ignore
+
+        if f1_model >= f1_persistence:
+            pr_f1 = (f1_model - f1_persistence) / (1.0 - f1_persistence) if f1_persistence != 1.0 else 0.0
+        else:
+            pr_f1 = (f1_model - f1_persistence) / f1_persistence if f1_persistence != 0.0 else 0.0
+
+        return float(pr_f1)
+
+    def analyze_ac_nc_performance(self, x: DataInput, y_true: TargetInput, y_persistence: TargetInput) -> pd.DataFrame:
+        """
+        Avalia o modelo isolando as janelas de Activity Change (AC) e No Change (NC).
+        """
+        y_pred = self.predict(x).astype(int)
+        y_t = np.array(y_true).astype(int)
+        y_pers = np.array(y_persistence).astype(int)
+
+        ac_mask = (y_t != y_pers)
+        nc_mask = (y_t == y_pers)
+
+        metrics = []
+
+        for mask, label in zip([ac_mask, nc_mask], ["AC (Activity Change)", "NC (No Change)"]):
+            if mask.sum() > 0:
+                y_t_mask = y_t[mask]
+                y_p_mask = y_pred[mask]
+
+                mcc = matthews_corrcoef(y_t_mask, y_p_mask)
+                hss = self.calculate_hss(y_t_mask, y_p_mask)
+                tss = self.calculate_tss(y_t_mask, y_p_mask)
+
+                metrics.append({
+                    "Subset": label,
+                    "Count": mask.sum(),
+                    "AC/NC-MCC": mcc,
+                    "AC/NC-HSS": hss,
+                    "AC/NC-TSS": tss
+                })
+
+        return pd.DataFrame(metrics).round(4)
+
     def save(self, filepath: str):
         joblib.dump(self, filepath)
         print(f"Modelo salvo em: {filepath}")
@@ -300,48 +428,142 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         return joblib.load(filepath)
 
     @staticmethod
-    def generate_features(xrays_to_slide: pd.DataFrame, cols: list[str] = None, metrics_windows: list[str] = None,
-                          deriv_windows: list[str] = None, resample_freq: str = '10min',
-                          resample_method: str = 'last') -> pd.DataFrame:
+    def calculate_rolling_features(df_source: pd.DataFrame, col: str,
+                                   metrics_windows: list[str], deriv_windows: list[str],
+                                   use_abs_for_log: bool = False,
+                                   use_abs_for_ratios: bool = False) -> pd.DataFrame:
 
-        if cols is None:
-            cols = ['xl']
-        if metrics_windows is None:
-            metrics_windows = ['1h', '6h', '12h', '24h', '7D']
-        if deriv_windows is None:
-            deriv_windows = ['5min', '15min', '30min', '1h', '3h', '6h', '12h', '24h']
+        df_col_features = pd.DataFrame(index=df_source.index)
 
+        new_features = {}
 
-        df_features = pd.DataFrame(index=xrays_to_slide.index)
+        if use_abs_for_log:
+            col_log = np.log10(np.abs(df_source[col]) + 1e-9)
+        else:
+            col_log = np.log10(df_source[col] + 1e-9)
+
+        for w in metrics_windows:
+            rolling = df_source[col].rolling(window=w)
+
+            new_features[f'{col}_mean_{w}'] = rolling.mean()
+            new_features[f'{col}_std_{w}'] = rolling.std()
+            new_features[f'{col}_max_{w}'] = rolling.max()
+            new_features[f'{col}_integ_{w}'] = rolling.sum()
+            new_features[f'{col}_log_mean_{w}'] = col_log.rolling(window=w).mean()
+
+        col_diff = df_source[col].diff()
+        diff_2 = col_diff.diff()
+
+        for w in deriv_windows:
+            new_features[f'{col}_deriv_{w}'] = col_diff.rolling(w).mean()
+            new_features[f'{col}_accel_{w}'] = diff_2.rolling(w).mean()
+
+        df_col_features = pd.DataFrame(new_features, index=df_source.index)
+
+        denom_24h = df_col_features[f'{col}_mean_24h']
+        denom_7d = df_col_features[f'{col}_mean_7D']
+
+        if use_abs_for_ratios:
+            denom_24h = denom_24h.abs()
+            denom_7d = denom_7d.abs()
+
+        denom_24h = denom_24h + 1e-9
+        denom_7d = denom_7d + 1e-9
+
+        df_col_features = df_col_features.assign(**{
+            f'{col}_ratio_max1h_mean24h': df_col_features[f'{col}_max_1h'] / denom_24h,
+            f'{col}_ratio_max6h_mean24h': df_col_features[f'{col}_max_6h'] / denom_24h,
+            f'{col}_ratio_mean24h_mean7d': df_col_features[f'{col}_mean_24h'] / denom_7d
+        })
+
+        return df_col_features
+
+    @staticmethod
+    def calculate_time_decays(target_index: pd.DatetimeIndex, events: pd.DataFrame,
+                              tau_hours: float = 12.0) -> pd.DataFrame:
+        """
+        Calcula as features de decaimento temporal (Bdec, Cdec, Mdec, Xdec, Edec) de forma vetorizada
+        e matematicamente exata sobre um grid de tempo predefinido (target_index).
+        """
+        decays = pd.DataFrame(index=target_index, columns=['Bdec', 'Cdec', 'Mdec', 'Xdec', 'Edec']).fillna(0.0)
+
+        if events.empty:
+            return decays
+
+        ev = events.sort_values('begin').copy()
+
+        t_index_sec = target_index.astype(np.int64).values / 10 ** 9
+        tau_sec = tau_hours * 3600.0
+
+        bdec_arr = np.zeros(len(target_index))
+        cdec_arr = np.zeros(len(target_index))
+        mdec_arr = np.zeros(len(target_index))
+        xdec_arr = np.zeros(len(target_index))
+        edec_arr = np.zeros(len(target_index))
+
+        ev = ev.assign(magnitude=ev['flux'].fillna(0.0))
+
+        for _, row in ev.iterrows():
+            if pd.isna(row['begin']):
+                continue
+
+            t_event_sec = row['begin'].timestamp()
+            c_num = row['class_numeric']
+            mag = row['magnitude']
+
+            valid_idx = t_index_sec >= t_event_sec
+
+            if not np.any(valid_idx):
+                continue
+
+            time_diff = t_index_sec[valid_idx] - t_event_sec
+            decay_factor = np.exp(-time_diff / tau_sec)
+
+            edec_arr[valid_idx] += mag * decay_factor
+
+            match c_num:
+                case 2:
+                    bdec_arr[valid_idx] += 1.0 * decay_factor
+                case 3:
+                    cdec_arr[valid_idx] += 1.0 * decay_factor
+                case 4:
+                    mdec_arr[valid_idx] += 1.0 * decay_factor
+                case _ if c_num >= 5:
+                    xdec_arr[valid_idx] += 1.0 * decay_factor
+
+        decays = decays.assign(
+            Bdec=bdec_arr,
+            Cdec=cdec_arr,
+            Mdec=mdec_arr,
+            Xdec=xdec_arr,
+            Edec=edec_arr
+        )
+
+        return decays
+
+    @staticmethod
+    def generate_xray_features(xrays_to_slide: pd.DataFrame, events_to_slide: pd.DataFrame,
+                               cols: list[str] = None, metrics_windows: list[str] = None,
+                               deriv_windows: list[str] = None, resample_freq: str = '12min',
+                               resample_method: str = 'last') -> pd.DataFrame:
+
+        if cols is None: cols = ['xl']
+        if metrics_windows is None: metrics_windows = ['1h', '6h', '12h', '24h', '7D']
+        if deriv_windows is None: deriv_windows = ['5min', '15min', '30min', '1h', '3h', '6h', '12h', '24h']
+
+        feature_dfs = []
 
         for col in cols:
-            xrays_to_slide[f'{col}_log'] = np.log10(xrays_to_slide[col] + 1e-9)
-            for w in metrics_windows:
-                rolling_window = xrays_to_slide[col].rolling(window=w)
-                df_features[f'{col}_mean_{w}'] = rolling_window.mean()
-                df_features[f'{col}_std_{w}'] = rolling_window.std()
-                df_features[f'{col}_max_{w}'] = rolling_window.max()
+            df_col = SolarFlarePredictionModel.calculate_rolling_features(
+                xrays_to_slide, col, metrics_windows, deriv_windows,
+                use_abs_for_log=False, use_abs_for_ratios=False
+            )
+            feature_dfs.append(df_col)
 
-                df_features[f'{col}_log_mean_{w}'] = xrays_to_slide[f'{col}_log'].rolling(window=w).mean()
-                df_features[f'{col}_integ_{w}'] = rolling_window.sum()
-
-            col_diff = xrays_to_slide[col].diff()
-            for w in deriv_windows:
-                df_features[f'{col}_deriv_{w}'] = col_diff.rolling(w).mean()
-
-                diff_2 = col_diff.diff()
-                df_features[f'{col}_accel_{w}'] = diff_2.rolling(w).mean()
-
-            df_features[f'{col}_ratio_max1h_mean24h'] = df_features[f'{col}_max_1h'] / (
-                    df_features[f'{col}_mean_24h'] + 1e-9)
-            df_features[f'{col}_ratio_max6h_mean24h'] = df_features[f'{col}_max_6h'] / (
-                    df_features[f'{col}_mean_24h'] + 1e-9)
-            df_features[f'{col}_ratio_mean24h_mean7d'] = df_features[f'{col}_mean_24h'] / (
-                    df_features[f'{col}_mean_7D'] + 1e-9)
-
-            xrays_to_slide = xrays_to_slide.drop(columns=[f'{col}_log'])
+        df_features = pd.concat(feature_dfs, axis=1)
 
         flux_smoothed = xrays_to_slide['xl'].rolling(window='5min').mean()
+
         conditions = [
             (flux_smoothed >= 1e-4),  # X
             (flux_smoothed >= 1e-5),  # M
@@ -349,11 +571,7 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         ]
         choices = [5, 4, 3]
 
-        class_numeric_series = pd.Series(
-            np.select(conditions, choices, default=0),
-            index=xrays_to_slide.index
-        )
-
+        class_numeric_series = pd.Series(np.select(conditions, choices, default=0), index=xrays_to_slide.index)
         prev_class = class_numeric_series.shift(1).fillna(0)
 
         is_C_onset = ((class_numeric_series >= 3) & (prev_class < 3)).astype(int)
@@ -361,22 +579,34 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         is_X_onset = ((class_numeric_series == 5) & (prev_class < 5)).astype(int)
 
         history_windows = ['6h', '24h', '3D', '7D']
+        new_history_cols = {}
 
         for w in history_windows:
-            df_features[f'count_C_{w}'] = is_C_onset.rolling(window=w).sum()
-            df_features[f'count_M_{w}'] = is_M_onset.rolling(window=w).sum()
-            df_features[f'count_X_{w}'] = is_X_onset.rolling(window=w).sum()
+            new_history_cols[f'count_C_{w}'] = is_C_onset.rolling(window=w).sum()
+            new_history_cols[f'count_M_{w}'] = is_M_onset.rolling(window=w).sum()
+            new_history_cols[f'count_X_{w}'] = is_X_onset.rolling(window=w).sum()
+            new_history_cols[f'sum_class_score_{w}'] = class_numeric_series.rolling(window=w).sum()
 
-            df_features[f'sum_class_score_{w}'] = class_numeric_series.rolling(window=w).sum()
+        df_features = df_features.assign(**new_history_cols)
 
-        return df_features.resample(resample_freq).agg(resample_method).ffill().dropna()
+        df_resampled = df_features.resample(resample_freq).agg(resample_method).ffill().dropna()
+
+        df_decays = SolarFlarePredictionModel.calculate_time_decays(
+            target_index=df_resampled.index,
+            events=events_to_slide,
+            tau_hours=12.0
+        )
+
+        df_final = pd.concat([df_resampled, df_decays], axis=1).dropna()
+
+        return df_final
 
     @staticmethod
     def generate_target(xrays_to_slide: pd.DataFrame, events_to_slide: pd.DataFrame, target_windows: list[str] = None,
-                        resample_freq: str = '10min', resample_method: str = 'last'):
+                        resample_freq: str = '12min', resample_method: str = 'last'):
 
         if target_windows is None:
-            target_windows = ['6h', '12h', '24h', '48h', '72h']
+            target_windows = ['24h']
 
         target_events_grouped = events_to_slide.set_index('begin')[['class_numeric', 'flux']]
         target_events_grouped = target_events_grouped.groupby(level=0).max().reindex(xrays_to_slide.index).fillna(0)
@@ -385,6 +615,8 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
         ts_flux = target_events_grouped['flux']
 
         df_target = pd.DataFrame(index=xrays_to_slide.index)
+        new_target_cols = {}
+
         for w in target_windows:
             window_timedelta = pd.to_timedelta(w)
             window_size_int = int(window_timedelta.total_seconds() / (60 * 1))
@@ -393,8 +625,10 @@ class SolarFlarePredictionModel(BaseEstimator, ClassifierMixin):
             future_class_numeric_max = ts_class.rolling(window=indexer, min_periods=1).max()
             future_flux_max = ts_flux.rolling(window=indexer, min_periods=1).max()
 
-            df_target[f'target_class_in_{w}'] = (future_class_numeric_max.shift(-1).fillna(0)).astype(int)
-            df_target[f'target_flux_in_{w}'] = future_flux_max.shift(-1).fillna(0.0)
+            new_target_cols[f'target_class_in_{w}'] = (future_class_numeric_max.shift(-1).fillna(0)).astype(int)
+            new_target_cols[f'target_flux_in_{w}'] = future_flux_max.shift(-1).fillna(0.0)
+
+        df_target = df_target.assign(**new_target_cols)
 
         return df_target.resample(resample_freq).agg(resample_method).ffill().dropna()
 
@@ -488,6 +722,12 @@ class SpecialistMXModel(XGBoostRegressorAdapter):
                  features_to_keep: List[str] = None,):
 
         super().__init__(params, threshold=0.0, features_to_keep=features_to_keep)
+
+        def analyze_error_distribution(x, y_true, flux_values, cutoff=-4.0):
+            return super().analyze_error_distribution(x, y_true, flux_values, cutoff=cutoff)
+
+        def analyze_flux_errors(x, y, flux_values, buffer_limits=None, cutoff=-4.0):
+            return super().analyze_flux_errors(x, y, flux_values, buffer_limits, cutoff=cutoff)
 
 
 class SolarFlarePredictor:

@@ -22,30 +22,21 @@ class SolarfallBacktester:
         s910 = models['specialist_910'].get(self.window_name)
         smx = models['specialist_mx'].get(self.window_name)
 
-        pred_gf = None
-        pred_s910 = None
-        pred_smx = None
-
-        print("1/4: Gatekeeper...")
+        print("Calculando predições brutas...")
         pred_gk = gk.predict(X_processed)
-        if pred_gk is not None and pred_gk == 1:
-            print("2/4: Great Filter...")
-            pred_gf = gf.predict(X_processed)
-        if pred_gf is not None and pred_gf == 1:
-            print("3/4: Specialist 910...")
-            pred_s910 = s910.predict(X_processed)
-        pred_smx_log = 'no prediction'
-        if pred_s910 is not None and pred_s910 == 1:
-            print("4/4: Specialist MX...")
-            pred_smx_log = smx.predict(X_processed)
-            pred_smx = (pred_smx_log >= self.cutoff).astype(int)
+        pred_gf = gf.predict(X_processed)
+        pred_s910 = s910.predict(X_processed)
 
-        print("Consolidando Decisões...")
+        pred_smx_log = smx.predict(X_processed)
+        pred_smx_class = (pred_smx_log >= self.cutoff).astype(int)
+
+        print("Consolidando Decisões Hierárquicas...")
+
         cond_no_flare = (pred_gk == 0)
-        cond_ab = (pred_gf is not None) & (pred_gf == 0)
-        cond_c = (pred_s910 is not None) & (pred_s910 == 0)
-        cond_m = (pred_smx is not None) & (pred_smx == 0)
-        cond_x = (pred_smx is not None) & (pred_smx == 1)
+        cond_ab = (pred_gk == 1) & (pred_gf == 0)
+        cond_c = (pred_gk == 1) & (pred_gf == 1) & (pred_s910 == 0)
+        cond_m = (pred_gk == 1) & (pred_gf == 1) & (pred_s910 == 1) & (pred_smx_class == 0)
+        cond_x = (pred_gk == 1) & (pred_gf == 1) & (pred_s910 == 1) & (pred_smx_class == 1)
 
         final_classes = np.select(
             [cond_no_flare, cond_ab, cond_c, cond_m, cond_x],
@@ -58,6 +49,7 @@ class SolarfallBacktester:
 
         label_map = {0: "No Flare", 1: "Class A/B", 2: "Class A/B", 3: "Class C", 4: "Class M", 5: "Class X"}
         results['Actual_Class'] = y_true.map(label_map)
+
         results['Is_Correct'] = (results['Predicted_Class'] == results['Actual_Class'])
 
         results['Raw_GK'] = pred_gk
@@ -66,57 +58,62 @@ class SolarfallBacktester:
         self.results = results
         return results
 
-    def analyze_stability(self, time_freq='7D'):
+    def get_performance_dataframes(self):
         if not hasattr(self, 'results'):
             raise ValueError("Execute simulate_cascade antes.")
 
-        print(f"\n--- Análise de Estabilidade Temporal (Janelas de {time_freq}) ---")
+        df = self.results.copy()
 
-        grouper = self.results.groupby(pd.Grouper(freq=time_freq))
+        class_order = ["No Flare", "Class A/B", "Class C", "Class M", "Class X"]
+        class_map = {label: idx for idx, label in enumerate(class_order)}
 
-        metrics = []
+        df['Act_Num'] = df['Actual_Class'].map(class_map)
+        df['Pred_Num'] = df['Predicted_Class'].map(class_map)
 
-        for name, group in grouper:
-            if group.empty: continue
+        metrics_data = []
 
-            y_true_bin = group['Actual_Class'].isin(['Class M', 'Class X']).astype(int)
-            y_pred_bin = group['Predicted_Class'].isin(['Class M', 'Class X']).astype(int)
+        total_predictions = len(df)
+        total_correct = (df['Act_Num'] == df['Pred_Num']).sum()
 
-            if y_true_bin.sum() == 0:
-                recall = np.nan
-            else:
-                recall = recall_score(y_true_bin, y_pred_bin, zero_division=0)
+        for cls in class_order:
+            cls_idx = class_map[cls]
 
-            precision = precision_score(y_true_bin, y_pred_bin, zero_division=0)
+            mask_real_is_cls = (df['Actual_Class'] == cls)
+            mask_pred_is_cls = (df['Predicted_Class'] == cls)
 
-            count_x_real = (group['Actual_Class'] == 'Class X').sum()
-            count_x_pred = (group['Predicted_Class'] == 'Class X').sum()
+            total_real = mask_real_is_cls.sum()
+            total_pred = mask_pred_is_cls.sum()
+            correct = (mask_real_is_cls & mask_pred_is_cls).sum()
 
-            metrics.append({
-                'Period': name,
-                'Records': len(group),
-                'Recall_MX': recall,
-                'Precision_MX': precision,
-                'Count_X_Real': count_x_real,
-                'Count_X_Pred': count_x_pred
+            fn_count = (mask_real_is_cls & (df['Pred_Num'] < cls_idx)).sum()
+
+            fp_count = (mask_pred_is_cls & (df['Act_Num'] < cls_idx)).sum()
+
+            metrics_data.append({
+                'Classe': cls,
+                'Total Real': total_real,
+                'Total Predito': total_pred,
+                'Acertos': correct,
+                'Falsos Negativos (Omissão)': fn_count,
+                'Falsos Positivos (Alarme)': fp_count,
+                'Precisão (%)': (correct / total_pred * 100) if total_pred > 0 else 0.0,
+                'Recall (%)': (correct / total_real * 100) if total_real > 0 else 0.0
             })
 
-        df_metrics = pd.DataFrame(metrics).set_index('Period')
-        return df_metrics
+        df_metrics = pd.DataFrame(metrics_data).set_index('Classe')
 
-    def plot_stability_report(self, df_metrics):
-        fig, ax1 = plt.subplots(figsize=(14, 6))
+        df_metrics.loc['TOTAL SISTEMA'] = df_metrics.sum(numeric_only=True)
+        df_metrics.loc['TOTAL SISTEMA', 'Precisão (%)'] = (total_correct / total_predictions * 100)
+        df_metrics.loc['TOTAL SISTEMA', 'Recall (%)'] = (total_correct / total_predictions * 100)  # Acurácia global
 
-        ax1.plot(df_metrics.index, df_metrics['Recall_MX'], label='Recall (M+X)', color='green', marker='o')
-        ax1.plot(df_metrics.index, df_metrics['Precision_MX'], label='Precision (M+X)', color='blue', linestyle='--')
-        ax1.set_ylabel('Score (0-1)')
-        ax1.set_title(f'Estabilidade do Modelo Solarfall ({self.window_name}) - Análise Semanal')
-        ax1.legend(loc='upper left')
-        ax1.grid(True, alpha=0.3)
+        df_transitions = pd.crosstab(
+            df['Actual_Class'],
+            df['Predicted_Class'],
+            dropna=False
+        )
 
-        ax2 = ax1.twinx()
-        ax2.bar(df_metrics.index, df_metrics['Count_X_Real'], color='red', alpha=0.2, width=4, label='# X Reais')
-        ax2.set_ylabel('Quantidade de Eventos Classe X')
-        ax2.legend(loc='upper right')
+        df_transitions = df_transitions.reindex(index=class_order, columns=class_order, fill_value=0)
 
-        plt.show()
+        df_transitions['Total Real'] = df_transitions.sum(axis=1)
+
+        return df_metrics, df_transitions

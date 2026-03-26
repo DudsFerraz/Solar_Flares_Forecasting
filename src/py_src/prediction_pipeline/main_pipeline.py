@@ -45,7 +45,7 @@ def main():
             last_data_time = df_raw.index[-1]
             latency = (datetime.now(timezone.utc) - last_data_time).total_seconds() / 60
 
-            df_features = SolarFlarePredictionModel.generate_features(df_raw)
+            df_features = SolarFlarePredictionModel.generate_xray_features(df_raw)
             last_row = df_features.iloc[-1]
 
             predictions = predictor.predict(last_row)
