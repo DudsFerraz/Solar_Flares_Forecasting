@@ -11,7 +11,7 @@ As previsões serão realizadas através de uma cascata de 3 modelos de machine 
 ### Modelo 2 - 'Great Filter' (O Filtro)
 
 * **Objetivo:** Separar explosões de baixo impacto ('A', 'B', 'C') de explosões de alto impacto ('M', 'X').
-* **Lógica:** É treinado apenas com as linhas classificadas como 'Flare'. Sua função é filtrar o "ruído" (explosões ABC e os Falsos Positivos do Modelo 1).
+* **Lógica:** É treinado apenas com as linhas classificadas como 'Flare'. Sua função é filtrar o "ruído" (explosões AB e os Falsos Positivos do Modelo 1).
 * **Balanceamento:** Este modelo lida com dados muito mais balanceados que os outros.
 
 ### Modelo 3 - 'Specialist' (O Especialista)
