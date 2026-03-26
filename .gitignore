@@ -2,5 +2,5 @@ info/
 .envadd
 .idea/
 .venv/
-.notes/
+notes/
 .env
