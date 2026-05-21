@@ -165,3 +165,4 @@ Se o modelo for supersensível, para não perder nada (alto Recall), ele vai toc
 
 * **Essência:** Isola o desempenho do modelo em momentos de inércia (o estado do Sol continuou igual) e momentos de virada (o Sol "ligou" ou "desligou" abruptamente).
 * **Exemplo:** No estado estável (NC), o modelo pontua bem (MCC 0.48). Já na mudança abrupta (AC), ele erra mais do que acerta (MCC -0.11). Isso comprova que o modelo é ótimo em diagnosticar a inércia, mas sofre para antecipar uma virada de cenário.
+

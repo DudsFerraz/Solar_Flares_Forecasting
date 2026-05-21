@@ -4,7 +4,8 @@ from .models import (
     Specialist910Model,
     SpecialistMXModel,
     SolarFlarePredictionModel,
-    SolarFlarePredictor
+    SolarFlarePredictor,
+    SolarfallFeatureEngineer
 )
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     'Specialist910Model',
     'SpecialistMXModel',
     'SolarFlarePredictionModel',
-    'SolarFlarePredictor'
+    'SolarFlarePredictor',
+    'SolarfallFeatureEngineer'
 ]

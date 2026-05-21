@@ -72,77 +72,51 @@ def wait_download(file_path: str, file_name: str, timeout_seconds: int = 300) ->
     return None
 
 
-def create_df_model_input(slided_df_path: str, target_column: str, wanted_cols_start_with: str, resample_value: str,
-                          resample_method: str) -> pd.DataFrame:
-    slided_df = pd.read_parquet(slided_df_path)
+def prepare_data_global_secure(df_model_input: pd.DataFrame, target_class_col: str,
+                               time_col: str, lambda_function: callable,
+                               train_pct: float, val_pct: float,
+                               target_flux_col: str = None, purge_hours: int = 24) -> dict:
+    # Ordena rigorosamente pelo tempo
+    df = df_model_input.sort_values(time_col).reset_index(drop=True)
 
-    wanted_cols = [c for c in slided_df.columns if c.startswith(wanted_cols_start_with) or c == target_column]
-    df_model_input = slided_df[wanted_cols]
-    df_model_input = df_model_input.resample(resample_value).agg(resample_method).ffill().dropna()
-    df_model_input[target_column] = df_model_input[target_column].astype(int)
-
-    return df_model_input
-
-
-def create_df_model_input_opt(slided_df_path, target_columns, wanted_cols_start_with):
-    try:
-        parquet_schema = pq.read_schema(slided_df_path)
-        all_columns = parquet_schema.names
-    except Exception as e:
-        print(f"Erro ao ler o esquema do Parquet: {e}")
-        all_columns = pd.read_parquet(slided_df_path, columns=[]).columns
-
-    # wanted_cols = [c for c in all_columns if c.startswith(wanted_cols_start_with) or c in target_columns]
-    wanted_cols = all_columns
-
-    print(f"Carregando {len(wanted_cols)} colunas do arquivo Parquet...")
-
-    try:
-        df_model_input = pd.read_parquet(slided_df_path, columns=wanted_cols)
-    except MemoryError:
-        print("Erro de Memória: Mesmo carregando colunas selecionadas, a RAM estourou.")
-        return None
-    except Exception as e:
-        print(f"Erro ao carregar colunas do Parquet: {e}")
-        return None
-
-    return df_model_input
-
-
-def prepare_data(df_model_input: pd.DataFrame, target_class_col: str, lambda_function: callable,
-                 train_pct: float, val_pct: float, test_pct: float = 0, target_flux_col: str = None) -> dict:
-    dict_ = {
-        'y': {},
-        'x': {},
-    }
-
-    n = len(df_model_input)
+    n = len(df)
     train_end = int(train_pct * n)
     val_end = int(n * (val_pct + train_pct))
 
-    if target_flux_col is not None:
-        dict_['flux'] = {}
-        dict_['flux']['all'] = df_model_input[target_flux_col]
+    # 1. Faz o Split Bruto
+    train_df = df.iloc[:train_end].copy()
+    val_df = df.iloc[train_end:val_end].copy()
+    test_df = df.iloc[val_end:].copy()
 
-        dict_['flux']['train'] = dict_['flux']['all'].iloc[:train_end]
-        dict_['flux']['val'] = dict_['flux']['all'].iloc[train_end:val_end]
-        dict_['flux']['test'] = dict_['flux']['all'].iloc[val_end:]
+    # 2. Aplica o Purge Gap (Remove amostras da Val/Test que sobrepõem o Treino/Val)
+    purge_td = pd.Timedelta(hours=purge_hours)
 
-        df_features = df_model_input.drop(columns=[target_class_col, target_flux_col], errors='ignore')
-    else:
-        df_features = df_model_input.drop(columns=[target_class_col], errors='ignore')
+    val_cutoff = train_df[time_col].max() + purge_td
+    val_df = val_df[val_df[time_col] > val_cutoff]
 
-    dict_['y']['all'] = df_model_input[target_class_col].apply(lambda_function)
-    dict_['x']['all'] = df_features
+    if not test_df.empty:
+        test_cutoff = val_df[time_col].max() + purge_td
+        test_df = test_df[test_df[time_col] > test_cutoff]
 
-    dict_['x']['train'] = dict_['x']['all'].iloc[:train_end]
-    dict_['y']['train'] = dict_['y']['all'].iloc[:train_end]
+    # 3. Monta o Dicionário de Retorno
+    dict_ = {'y': {}, 'x': {}}
 
-    dict_['x']['val'] = dict_['x']['all'].iloc[train_end:val_end]
-    dict_['y']['val'] = dict_['y']['all'].iloc[train_end:val_end]
+    columns_to_drop = [target_class_col, time_col]
+    if target_flux_col:
+        columns_to_drop.append(target_flux_col)
+        dict_['flux'] = {
+            'train': train_df[target_flux_col],
+            'val': val_df[target_flux_col],
+            'test': test_df[target_flux_col] if not test_df.empty else None
+        }
 
-    dict_['x']['test'] = dict_['x']['all'].iloc[val_end:]
-    dict_['y']['test'] = dict_['y']['all'].iloc[val_end:]
+    # Popula X e Y aplicando a lambda
+    for split_name, split_df in zip(['train', 'val', 'test'], [train_df, val_df, test_df]):
+        if split_df.empty:
+            continue
+
+        dict_['y'][split_name] = split_df[target_class_col].apply(lambda_function)
+        dict_['x'][split_name] = split_df.drop(columns=columns_to_drop, errors='ignore')
 
     return dict_
 
