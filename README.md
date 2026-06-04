@@ -1,6 +1,6 @@
 You can switch the language using the menu below:
 
-🌐 **Languages:** [English](README.md) | [Portuguese](README.pt.md)
+🌐 **Languages:** [English](README.md) | [Português](README.pt.md)
 
 # Solarfall: A Multi-Stage Machine Learning Architecture for Solar Flare Forecasting
 
