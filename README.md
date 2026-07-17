@@ -19,4 +19,4 @@ Predicting solar flares is essential for mitigating space weather risks that imp
 
 *Advisor: Sérgio Luisir Discola Junior*
 
-[📄 Read the Full Research Report Here (More info)](Presentations/relatorio_parcial.docx)
+[📄 Read the Full Research Report Here (More info)](Presentations/Relatório Final - Eduardo Ferraz.docx)
