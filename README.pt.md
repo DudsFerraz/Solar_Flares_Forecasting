@@ -19,4 +19,4 @@ A previsão de explosões solares (*solar flares*) é essencial para a mitigaç�
 
 *Orientador: Sérgio Luisir Discola Junior*
 
-[📄 Leia o Relatório Completo Aqui (Mais informações)](Presentations/relatorio_parcial.docx)
+[📄 Leia o Relatório Completo Aqui (Mais informações)](Presentations/relatorio_final.docx)
